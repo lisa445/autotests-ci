@@ -1,0 +1,155 @@
+name: Run Autotests
+
+on:
+  # Запускать при пуше в main/master
+  push:
+    branches: [ main, master ]
+  
+  # Запускать при создании pull request
+  pull_request:
+    branches: [ main, master ]
+  
+  # Запускать по расписанию (каждый день в 8 утра UTC)
+  schedule:
+    - cron: '0 8 * * *'
+  
+  # Запускать вручную из UI GitHub
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Type of tests to run'
+        required: false
+        default: 'all'
+
+# Переменные окружения
+env:
+  PYTHON_VERSION: '3.10'
+  PROJECT_NAME: 'autotests-ci'
+
+jobs:
+  # Основной job для запуска тестов
+  run-tests:
+    name: Run Python Tests
+    runs-on: ubuntu-latest  # Можно использовать windows-latest или macos-latest
+    
+    # Стратегия для матричного тестирования (опционально)
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11']
+    
+    steps:
+    # Шаг 1: Получение кода
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0  # Полная история коммитов
+    
+    # Шаг 2: Настройка Python
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    # Шаг 3: Кэширование pip пакетов (ускоряет сборку)
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    # Шаг 4: Установка зависимостей
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-html pytest-xdist
+    
+    # Шаг 5: Запуск тестов
+    - name: Run tests with pytest
+      run: |
+        python -m pytest tests/ -v \
+          --html=test-report.html \
+          --self-contained-html \
+          --junitxml=junit-report.xml \
+          --maxfail=5
+    
+    # Шаг 6: Загрузка отчета тестов
+    - name: Upload test report
+      uses: actions/upload-artifact@v3
+      if: always()  # Загружать даже если тесты упали
+      with:
+        name: test-report-${{ matrix.python-version }}
+        path: |
+          test-report.html
+          junit-report.xml
+    
+    # Шаг 7: Отправка уведомления (опционально)
+    - name: Send notification
+      if: failure()
+      run: |
+        echo "Some tests failed! Check the report."
+
+  # Отдельный job для API тестов (опционально)
+  api-tests:
+    name: Run API Tests
+    runs-on: ubuntu-latest
+    needs: run-tests  # Запускать после основного job
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+    
+    - name: Run API tests
+      run: |
+        python -m pytest tests/ -v -m api \
+          --html=api-report.html \
+          --self-contained-html
+    
+    - name: Upload API test report
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: api-test-report
+        path: api-report.html
+
+  # Job для проверки стиля кода (опционально)
+  lint:
+    name: Lint Code
+    runs-on: ubuntu-latest
+    needs: run-tests
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install linters
+      run: |
+        pip install flake8 black isort
+    
+    - name: Check code style with black
+      run: |
+        black --check tests/
+    
+    - name: Check imports with isort
+      run: |
+        isort --check-only tests/
+    
+    - name: Check code with flake8
+      run: |
+        flake8 tests/ --max-line-length=88
